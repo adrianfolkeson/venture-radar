@@ -1,0 +1,632 @@
+# 🏗️ VENTURE RADAR - TECHNICAL SPECIFICATION
+
+---
+
+## 🎯 PROJECT OVERVIEW
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║  NAME:           VENTURE RADAR                             ║
+║  TYPE:           Personal Intelligence Tool                ║
+║  PURPOSE:        Discover + score startup opportunities   ║
+║  TARGET USER:    Solo founder / Developer                  ║
+║  BUDGET:         $0 (free tiers)                         ║
+║  TIMELINE:       4 weeks                                  ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## 📊 SYSTEM ARCHITECTURE
+
+### High-Level Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    DATA COLLECTION                       │  │
+│  │                                                          │  │
+│  │   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐ │  │
+│  │   │ Reddit │   │   HN    │   │Twitter │   │   PH   │ │  │
+│  │   │  API   │   │   API   │   │   API  │   │   API  │ │  │
+│  │   └───┬───┘   └───┬───┘   └───┬───┘   └───┬───┘ │  │
+│  │       └───────────┼───────────┼───────────┘      │  │
+│  │                   ▼                               │  │
+│  │           ┌───────────────┐                       │  │
+│  │           │ RAW DATA     │                       │  │
+│  │           │  STORAGE     │                       │  │
+│  │           │ (Supabase)  │                       │  │
+│  │           └───────────────┘                       │  │
+│  └─────────────────────┬──────────────────────────────┘  │
+│                        ▼                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    AI PROCESSING                         │  │
+│  │                                                          │  │
+│  │   ┌─────────────────────────────────────────────────┐    │  │
+│  │   │              OPENAI API                       │    │  │
+│  │   │                                                 │    │  │
+│  │   │  • Sentiment analysis                         │    │  │
+│  │   │  • Pain point extraction                     │    │  │
+│  │   │  • Competition identification                │    │  │
+│  │   │  • "Should you build" recommendation        │    │  │
+│  │   │                                                 │    │  │
+│  │   └─────────────────────────────────────────────────┘    │  │
+│  └─────────────────────┬───────────────────────────────────┘  │
+│                        ▼                                      │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    SCORING ENGINE                        │  │
+│  │                                                          │  │
+│  │   VELOCITY ────── 35%                                   │  │
+│  │   SATURATION ──── 25%  (inverted: low = better)          │  │
+│  │   MONETIZATION ── 25%                                   │  │
+│  │   TIMING ──────── 15%                                   │  │
+│  │                                                          │  │
+│  │   OVERALL = Weighted Sum → 0-100 Score                  │  │
+│  └─────────────────────┬───────────────────────────────────┘  │
+│                        ▼                                      │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    DASHBOARD UI                         │  │
+│  │                                                          │  │
+│  │   • Opportunity List (sorted by score)                   │  │
+│  │   • Detail View (score breakdown + AI summary)           │  │
+│  │   • Filters (tags, score range, source)                  │  │
+│  │   • Feedback Loop (mark as good/bad)                    │  │
+│  │                                                          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🗄️ DATABASE SCHEMA
+
+### Tables
+
+```sql
+-- Main opportunities table
+CREATE TABLE opportunities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  
+  -- Basic info
+  name TEXT NOT NULL,
+  description TEXT,
+  source TEXT NOT NULL, -- 'reddit', 'hn', 'twitter', 'ph'
+  source_url TEXT,
+  source_id TEXT, -- original post ID
+  
+  -- Raw data (for analysis)
+  raw_title TEXT,
+  raw_content TEXT,
+  raw_url TEXT,
+  
+  -- Temporal signals (mentions over time)
+  mentions_w1 INT DEFAULT 0, -- week 1
+  mentions_w2 INT DEFAULT 0, -- week 2
+  mentions_w3 INT DEFAULT 0, -- week 3
+  mentions_w4 INT DEFAULT 0, -- week 4
+  
+  -- Engagement metrics
+  upvotes INT DEFAULT 0,
+  comments INT DEFAULT 0,
+  shares INT DEFAULT 0,
+  
+  -- Sentiment (from AI)
+  avg_sentiment DECIMAL(3,2) DEFAULT 0, -- -1 to 1
+  sentiment_sample_size INT DEFAULT 0,
+  
+  -- AI Analysis (from GPT)
+  ai_summary TEXT,
+  ai_pain_points TEXT[],
+  ai_competition_level TEXT, -- 'low', 'medium', 'high'
+  ai_gtm_suggestion TEXT,
+  ai_estimated_build_time TEXT,
+  ai_should_build BOOLEAN,
+  
+  -- Scores (0-100)
+  velocity_score INT DEFAULT 0,
+  saturation_score INT DEFAULT 0, -- higher = more competition
+  monetization_score INT DEFAULT 0,
+  timing_score INT DEFAULT 0,
+  overall_score INT DEFAULT 0,
+  
+  -- Tags (for filtering)
+  tags TEXT[],
+  
+  -- User feedback (training data)
+  user_rating INT, -- 1-5
+  user_notes TEXT,
+  marked_built BOOLEAN DEFAULT FALSE,
+  marked_skipped BOOLEAN DEFAULT FALSE,
+  
+  -- Timestamps
+  first_seen_at TIMESTAMP DEFAULT NOW(),
+  last_updated_at TIMESTAMP DEFAULT NOW(),
+  last_scraped_at TIMESTAMP,
+  
+  -- Status
+  status TEXT DEFAULT 'active', -- 'active', 'analyzed', 'archived'
+  
+  -- Constraints
+  UNIQUE(source, source_id)
+);
+
+-- Indexes for common queries
+CREATE INDEX idx_opportunities_score ON opportunities(overall_score DESC);
+CREATE INDEX idx_opportunities_source ON opportunities(source);
+CREATE INDEX idx_opportunities_status ON opportunities(status);
+CREATE INDEX idx_opportunities_created ON opportunities(first_seen_at DESC);
+
+-- Tags table (for categorization)
+CREATE TABLE tags (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT UNIQUE NOT NULL,
+  slug TEXT UNIQUE NOT NULL,
+  color TEXT DEFAULT '#6366f1', -- hex color
+  category TEXT, -- 'industry', 'tech', 'business_model'
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- User feedback for training
+CREATE TABLE feedback (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  opportunity_id UUID REFERENCES opportunities(id),
+  rating INT CHECK (rating >= 1 AND rating <= 5),
+  notes TEXT,
+  would_build BOOLEAN,
+  built_anything BOOLEAN,
+  outcome TEXT, -- 'built_and_launched', 'too_hard', 'not_worth_it'
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- System settings
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value JSONB,
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+---
+
+## 🤖 AI PROMPTS
+
+### Main Analysis Prompt
+
+```typescript
+const ANALYSIS_PROMPT = `
+You are analyzing a trending topic for startup opportunities.
+
+TOPIC: {topic_name}
+DESCRIPTION: {topic_description}
+MENTIONS: {mention_count} in the last week
+SENTIMENT: {avg_sentiment} (scale: -1 to 1)
+
+TASKS:
+1. Identify 3-5 pain points people mention
+2. Estimate competition level (low/medium/high)
+3. Suggest a Go-to-Market approach
+4. Estimate build complexity (1-10)
+5. Answer: "Should someone build this?" (yes/no/conditional)
+
+OUTPUT FORMAT (JSON):
+{
+  "pain_points": ["pain1", "pain2", "pain3"],
+  "competition_level": "low|medium|high",
+  "gtm_suggestion": "1-2 sentences",
+  "build_complexity": 1-10,
+  "should_build": true,
+  "should_build_reason": "1 sentence",
+  "opportunity_tags": ["tag1", "tag2"]
+}
+
+Be honest. If the space is too crowded, say so.
+`;
+```
+
+### Pain Point Extraction
+
+```typescript
+const PAIN_POINT_PROMPT = `
+Extract the main pain points from this discussion.
+
+TEXT: {text}
+
+Return a JSON array of pain points, each max 5 words.
+Example: ["too expensive", "slow performance", "hard to use"]
+
+JSON output only.
+`;
+```
+
+---
+
+## 📈 SCORING ALGORITHMS
+
+### Velocity Score (0-100)
+
+```typescript
+function calculateVelocity(
+  w1: number,
+  w2: number,
+  w3: number,
+  w4: number
+): number {
+  // Recent average (weeks 3-4)
+  const recent = (w3 + w4) / 2;
+  
+  // Older average (weeks 1-2)
+  const older = (w1 + w2) / 2;
+  
+  // Growth ratio
+  const growth = older === 0 ? 3 : recent / older;
+  
+  // Cap at 3x growth
+  const growthScore = Math.min(3, growth) * 30;
+  
+  // Volume bonus (up to 40 points for high volume)
+  const volumeScore = Math.min(40, recent / 5);
+  
+  // New opportunity bonus (no previous mentions)
+  const newBonus = older === 0 ? 30 : 0;
+  
+  return Math.min(100, growthScore + volumeScore + newBonus);
+}
+```
+
+### Saturation Score (0-100)
+
+```typescript
+function calculateSaturation(
+  competitionCount: number,
+  mentions: number,
+  sentiment: number
+): number {
+  // Competition factor
+  let saturation = Math.min(100, competitionCount * 15);
+  
+  // If huge mentions but few competitors = blue ocean
+  if (mentions > 500 && competitionCount < 5) {
+    saturation = saturation * 0.5;
+  }
+  
+  // Negative sentiment = frustrated users = opportunity
+  if (sentiment < -0.3) {
+    saturation = saturation * 0.7;
+  }
+  
+  return Math.round(saturation);
+}
+```
+
+### Monetization Score (0-100)
+
+```typescript
+function calculateMonetization(
+  painPoints: string[],
+  sentiment: number,
+  mentions: number
+): number {
+  // Pain points = willingness to pay signals
+  const paySignals = [
+    'expensive', 'cost', 'pricing', 'pay',
+    'subscription', 'freemium', 'cheap',
+    'afford', 'budget', 'dollar'
+  ];
+  
+  const painCount = painPoints.filter(p =>
+    paySignals.some(s => p.toLowerCase().includes(s))
+  ).length;
+  
+  // Each pain point = 25 points (max 100)
+  let score = Math.min(100, painCount * 25);
+  
+  // High mentions of pricing = people want alternatives
+  if (mentions > 100 && score > 0) {
+    score = score + 10;
+  }
+  
+  return Math.round(Math.min(100, score));
+}
+```
+
+### Timing Score (0-100)
+
+```typescript
+function calculateTiming(
+  mentions: number[],
+  saturation: number
+): number {
+  // First mention = new opportunity
+  const hasHistory = mentions.some(m => m > 0);
+  
+  if (!hasHistory) {
+    return 85; // Fresh, good timing
+  }
+  
+  // Growing = good timing
+  const recent = mentions.slice(-2).reduce((a, b) => a + b, 0);
+  const older = mentions.slice(0, 2).reduce((a, b) => a + b, 0);
+  
+  if (recent > older * 1.5) {
+    return 80; // Still growing
+  }
+  
+  if (recent > older * 0.8) {
+    return 60; // Stable
+  }
+  
+  if (saturation > 70) {
+    return 30; // Too late
+  }
+  
+  return 50; // Default
+}
+```
+
+### Overall Score
+
+```typescript
+function calculateOverallScore(
+  velocity: number,
+  saturation: number,
+  monetization: number,
+  timing: number
+): number {
+  return Math.round(
+    velocity * 0.35 +
+    (100 - saturation) * 0.25 + // Invert saturation
+    monetization * 0.25 +
+    timing * 0.15
+  );
+}
+```
+
+---
+
+## 🔌 API ROUTES
+
+### Endpoints
+
+```
+GET  /api/opportunities
+     ├── Query: ?limit=20&offset=0&source=reddit&min_score=50
+     └── Returns: { opportunities: [], total: number }
+
+GET  /api/opportunities/[id]
+     └── Returns: { opportunity: {...} }
+
+POST /api/opportunities/[id]/feedback
+     └── Body: { rating: 1-5, notes: string, would_build: boolean }
+
+POST /api/scrape
+     └── Triggers manual scrape (for testing)
+
+GET  /api/stats
+     └── Returns: { total: number, analyzed: number, avg_score: number }
+```
+
+---
+
+## 📁 PROJECT STRUCTURE
+
+```
+venture-radar/
+├── app/
+│   ├── layout.tsx           # Root layout
+│   ├── page.tsx            # Dashboard (main)
+│   ├── globals.css         # Global styles
+│   └── api/
+│       ├── opportunities/
+│       │   ├── route.ts     # GET all
+│       │   └── [id]/
+│       │       ├── route.ts     # GET one
+│       │       └── feedback/
+│       │           └── route.ts # POST feedback
+│       ├── scrape/
+│       │   └── route.ts   # POST trigger scrape
+│       └── stats/
+│           └── route.ts   # GET stats
+│
+├── lib/
+│   ├── supabase.ts        # Supabase client
+│   ├── types.ts           # TypeScript types
+│   ├── scoring.ts         # Scoring algorithms
+│   ├── prompts.ts         # AI prompts
+│   └── utils.ts          # Helpers
+│
+├── scripts/
+│   ├── scrape-reddit.ts   # Reddit scraper
+│   ├── scrape-hn.ts       # HN scraper
+│   ├── analyze.ts         # AI analysis
+│   └── cron.ts            # Cron job setup
+│
+├── components/
+│   ├── OpportunityCard.tsx
+│   ├── OpportunityList.tsx
+│   ├── OpportunityDetail.tsx
+│   ├── ScoreGauge.tsx
+│   ├── ScoreBreakdown.tsx
+│   ├── TagFilter.tsx
+│   ├── FilterBar.tsx
+│   └── Header.tsx
+│
+├── hooks/
+│   ├── useOpportunities.ts
+│   └── useScoring.ts
+│
+├── .env.local             # Environment variables
+├── .env.example           # Template
+├── package.json
+├── tsconfig.json
+├── tailwind.config.ts
+├── next.config.js
+└── README.md
+```
+
+---
+
+## 🧪 TESTING STRATEGY
+
+```typescript
+// Unit tests (Vitest)
+tests/
+├── scoring.test.ts        # Scoring algorithms
+├── prompts.test.ts       # Prompt parsing
+└── utils.test.ts         # Utilities
+
+// Integration tests
+tests/
+├── api.test.ts           # API routes
+├── scraping.test.ts      # Scrapers
+└── ai.test.ts           # AI prompts
+```
+
+---
+
+## 🚀 DEPLOYMENT
+
+### Vercel (Frontend + API)
+
+```bash
+vercel --prod
+```
+
+### Supabase (Database)
+
+- Create project at supabase.com
+- Run migrations
+- Get connection string
+- Add to .env.local
+
+### Cron Jobs
+
+```bash
+# Run every hour
+0 * * * * curl -X POST https://your-app.vercel.app/api/scrape
+
+# Or use Vercel Cron
+```
+
+---
+
+## 💰 COST BREAKDOWN
+
+| Service | Tier | Cost/Month |
+|---------|------|------------|
+| Next.js (Vercel) | Hobby | $0 |
+| Supabase | Free | $0 |
+| OpenAI | Pay-as-you-go | ~$10-20 |
+| Domain | .com | $12/year |
+| **Total** | | **~$15/month** |
+
+---
+
+## 📅 DEVELOPMENT TIMELINE
+
+```
+Week 1: Foundation
+├── Day 1-2: Setup Next.js + Supabase
+├── Day 3-4: Reddit scraper
+├── Day 5-6: HN scraper
+└── Day 7: Basic database + queries
+
+Week 2: AI
+├── Day 8-9: OpenAI integration
+├── Day 10-11: Pain point analysis
+├── Day 12-13: "Should you build"
+└── Day 14: Test + iterate
+
+Week 3: UI
+├── Day 15-16: Dashboard layout
+├── Day 17-18: List + filters
+├── Day 19-20: Detail view
+└── Day 21: Polish + test
+
+Week 4: Polish
+├── Day 22-23: More data sources
+├── Day 24-25: Alerts + notifications
+├── Day 26-27: Performance + security
+└── Day 28: Deploy + ship!
+```
+
+---
+
+## 🎯 SUCCESS METRICS
+
+```
+By Week 2:
+├── ✓ 100+ opportunities analyzed
+├── ✓ AI summaries working
+└── ✓ Basic scoring functional
+
+By Week 4:
+├── ✓ 500+ opportunities in DB
+├── ✓ Dashboard deployed
+├── ✓ User feedback loop working
+└── ✓ First "worth building" opportunity found
+
+By Month 3:
+├── ✓ 1000+ opportunities
+├── ✓ Good scoring accuracy (user feedback validates)
+└── ✓ 3-5 ideas for potential products
+```
+
+---
+
+## 🛡️ ERROR HANDLING
+
+```typescript
+// Scraping errors
+try {
+  const data = await scrapeReddit();
+} catch (error) {
+  console.error('Scraping failed:', error);
+  // Retry with backoff
+  // Log to monitoring
+  // Continue with cached data
+}
+
+// AI errors
+try {
+  const analysis = await analyzeWithAI(data);
+} catch (error) {
+  console.error('AI analysis failed:', error);
+  // Fallback to manual analysis
+  // Retry later
+  // Mark as "needs review"
+}
+```
+
+---
+
+## 🔐 ENVIRONMENT VARIABLES
+
+```env
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=xxx
+
+# OpenAI
+OPENAI_API_KEY=sk-xxx
+
+# Optional
+CRON_SECRET=xxx
+```
+
+---
+
+## 📚 FURTHER READING
+
+- [Supabase Docs](https://supabase.com/docs)
+- [OpenAI API](https://platform.openai.com/docs)
+- [Next.js Docs](https://nextjs.org/docs)
+- [Tailwind Docs](https://tailwindcss.com/docs)
+
+---
+
+**Last Updated:** 2025-05-17
+**Version:** 1.0.0
