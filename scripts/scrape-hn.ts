@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { getSupabaseAdmin, TABLE } from "../lib/supabase";
+import type { ScrapeRow } from "./scrape-reddit";
 
 interface AlgoliaHit {
   objectID: string;
@@ -26,53 +27,57 @@ async function fetchHN(query: string, hitsPerPage = 30): Promise<AlgoliaHit[]> {
   return json.hits;
 }
 
-export async function scrapeHN(): Promise<number> {
-  const sb = getSupabaseAdmin();
-  let inserted = 0;
-
+export async function fetchHNItems(): Promise<ScrapeRow[]> {
+  const all: ScrapeRow[] = [];
   for (const q of QUERIES) {
-    let hits: AlgoliaHit[];
     try {
-      hits = await fetchHN(q);
+      const hits = await fetchHN(q);
+      for (const h of hits) {
+        if (!h.title) continue;
+        all.push({
+          name: h.title.slice(0, 200),
+          description: (h.story_text ?? "").slice(0, 1000) || null,
+          source: "hn",
+          source_id: h.objectID,
+          source_url: `https://news.ycombinator.com/item?id=${h.objectID}`,
+          raw_title: h.title,
+          raw_content: h.story_text,
+          raw_url: h.url,
+          upvotes: h.points ?? 0,
+          comments: h.num_comments ?? 0,
+          mentions_w4: 1,
+          tags: [q.toLowerCase().replace(/\s+/g, "-")],
+          status: "active",
+          last_scraped_at: new Date().toISOString()
+        });
+      }
+      console.log(`[hn] "${q}": ${hits.length} fetched`);
     } catch (e) {
       console.error(`[hn] ${q} fetch failed:`, e instanceof Error ? e.message : e);
-      continue;
     }
+  }
+  return all;
+}
 
-    const rows = hits
-      .filter((h) => h.title)
-      .map((h) => ({
-        name: (h.title ?? "").slice(0, 200),
-        description: (h.story_text ?? "").slice(0, 1000) || null,
-        source: "hn",
-        source_id: h.objectID,
-        source_url: `https://news.ycombinator.com/item?id=${h.objectID}`,
-        raw_title: h.title,
-        raw_content: h.story_text,
-        raw_url: h.url,
-        upvotes: h.points ?? 0,
-        comments: h.num_comments ?? 0,
-        mentions_w4: 1,
-        tags: [q.toLowerCase().replace(/\s+/g, "-")],
-        status: "active",
-        last_scraped_at: new Date().toISOString()
-      }));
+export async function scrapeHN(): Promise<number> {
+  const items = await fetchHNItems();
+  if (items.length === 0) return 0;
 
+  try {
+    const sb = getSupabaseAdmin();
     const { error, data } = await sb
       .from(TABLE)
-      .upsert(rows, { onConflict: "source,source_id", ignoreDuplicates: false })
+      .upsert(items, { onConflict: "source,source_id", ignoreDuplicates: false })
       .select("id");
-
     if (error) {
-      console.error(`[hn] ${q} upsert error:`, error.message);
-      continue;
+      console.error("[hn] upsert error:", error.message);
+      return 0;
     }
-
-    inserted += data?.length ?? 0;
-    console.log(`[hn] "${q}": ${data?.length ?? 0} rows`);
+    return data?.length ?? 0;
+  } catch (e) {
+    console.error("[hn] db unavailable:", e instanceof Error ? e.message : e);
+    return 0;
   }
-
-  return inserted;
 }
 
 if (require.main === module) {
